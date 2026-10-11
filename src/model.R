@@ -1,11 +1,16 @@
+library(car)
+library(psych)
+library(pROC)
+
 characteristics <- c("id",
                      "age", "gender", "isMarried", "education", "hasChildren",
                      "drivingExperience", "creditScore", "speedingViolations", "DUIs", "pastAccidents",
                      "vehicleType", "isVehicleBefore2015", "isVehicleOwner",
                      "isClaimRecorded")
-processData <- function() {
 
-  claims <- read.csv("~/data/claims.csv")
+processData <- function(path) {
+
+  claims <- read.csv(path)
 
   # Remove ID
   claims <- claims[, -1]
@@ -25,10 +30,12 @@ processData <- function() {
   claims$age               <- as.factor(claims$age)
   claims$education         <- as.factor(claims$education)
   claims$drivingExperience <- as.factor(claims$drivingExperience)
+  
+  claims
 }
 
-testCreditScore <- function() {
-  claims.culled = claims[-which(is.na(claims$creditScore)), ]
+testCreditScore <- function(claims) {
+  claims.culled = claims[!is.na(claims$creditScore), ]
 
   # Fit with creditScore (full model)
   model.full <- glm(isClaimRecorded ~ age + gender + education + drivingExperience + vehicleType + isMarried + hasChildren + isVehicleBefore2015 + isVehicleOwner + creditScore + speedingViolations + DUIs + pastAccidents,
@@ -41,36 +48,72 @@ testCreditScore <- function() {
                       data = claims.culled)
 
   # Observe that creditScore is not a strong predictor and the only source of NAs, reasonable to exclude (not associated with other variables where PCA doesn't need to be performed etc)
-  summary(model.noCredit)
-
-  anova(model.noCredit, model.full, test = "Chisq")
+  list (
+    model1 = summary(model.full),
+    model2 = summary(model.noCredit),
+    lrt = anova(model.noCredit, model.full, test = "Chisq")
+  )
 }
 
-model <- glm(isClaimRecorded ~ age + gender + education + drivingExperience + vehicleType + isMarried + hasChildren + isVehicleBefore2015 + isVehicleOwner + speedingViolations + DUIs + pastAccidents,
+fitModel <- function(claims) {
+
+  model <- glm(isClaimRecorded ~ age + gender + education + drivingExperience + vehicleType + isMarried + hasChildren + isVehicleBefore2015 + isVehicleOwner + speedingViolations + DUIs + pastAccidents,
              family = binomial(link = "logit"),
              data = claims)
-
-testMulticollinearity <- function() {
-  collinearity <- vif(model)
-  kmoStat <- KMO(claims[, c("speedingViolations", "DUIs", "pastAccidents")])
+  
+  model
 }
 
-performModelSelection <- function() {
+fitFinalModel <- function(claims) {
+  model <- glm(isClaimRecorded ~ gender + drivingExperience + isMarried + hasChildren + isVehicleBefore2015 + isVehicleOwner,
+               family = binomial(link = "logit"),
+               data = claims)
+  
+  model
+}
+
+writeCoefficients <- function(model, path = "data/coefficients.csv") {
+    selected <- coef(model)
+    output <- data.frame(term = names(selected), factor_level = "",
+                    estimate = unname(selected), stringsAsFactors = FALSE)
+  
+    for (t in c("gender", "drivingExperience", "isMarried", "hasChildren",
+              "isVehicleBefore2015", "isVehicleOwner", "pastAccidents")) {
+      idx <- startsWith(output$term, t)
+      output$factor_level[idx] <- substring(output$term[idx], nchar(t) + 1)
+      output$term[idx] <- t
+    }
+  
+  write.csv(output, path, row.names = FALSE)
+}
+
+testMulticollinearity <- function(claims) {
+  list (
+    vif = vif(fitModel(claims)),
+    kmo = KMO(claims[, c("speedingViolations", "DUIs", "pastAccidents")])
+  )
+}
+
+performModelSelection <- function(claims) {
   set.seed(1)
   stepwiseAIC <- step(model, direction = "backward", k = 2, trace = 0)
   stepwiseBIC <- step(model, direction = "backward", k = log(nrow(claims)), trace = 0)
   summary(stepwiseAIC)
   summary(stepwiseBIC)
 
-  anova(stepwiseAIC, model, test = "Chisq")
-  anova(stepwiseBIC, model, test = "Chisq")
+  list(
+    aicFormula = formula(stepwiseAIC),
+    bicFormula = formula(stepwiseBIC),
+    lrtAIC = anova(stepwiseAIC, model, test = "Chisq"),
+    lrtBIC = anova(stepwiseBIC, model, test = "Chisq"),
 
-  model <- glm(isClaimRecorded ~ gender + drivingExperience + isMarried + hasChildren + isVehicleBefore2015 + isVehicleOwner + pastAccidents,
+    model = glm(isClaimRecorded ~ gender + drivingExperience + isMarried + hasChildren + isVehicleBefore2015 + isVehicleOwner + pastAccidents,
              family = binomial(link = "logit"),
              data = claims)
+  )
 }
 
-getResidualLeverageInfluence <- function() {
+getResidualLeverageInfluence <- function(model, claims) {
   residuals.deviance <- residuals(model, type = "deviance")
   residuals.pearson  <- residuals(model, type = "pearson")
 
@@ -85,11 +128,20 @@ getResidualLeverageInfluence <- function() {
   highLeverage       <- which(leverageValues > hlpThreshold)
 
   highInfluence      <- which(cooksDistance  > cooksThreshold)
+  
+  list (
+    dispersion = dispersionRatio,
+    leverage = leverageValues,
+    hlpThreshold = hlpThreshold,
+    cooksThreshold = cooksThreshold,
+    highLeverage = highLeverage,
+    highInfluence = highInfluence
+  )
 }
 
-getTestPerformance <- function() {
+getTestPerformance <- function(claims) {
   set.seed(1)
-  trainSample  <- sample(nrow(df), nrow(df) * 0.7)
+  trainSample  <- sample(nrow(claims), nrow(claims) * 0.7)
 
   claims.train <- claims[ trainSample, ]
   claims.test  <- claims[-trainSample, ]
@@ -106,7 +158,7 @@ getTestPerformance <- function() {
   brierScore <- mean((claims.test$isClaimRecorded - predictions)^2)
   
   list (
-    AUCROC,
-    brierScore
+    auc = AUCROC,
+    brier = brierScore
   )
 }
