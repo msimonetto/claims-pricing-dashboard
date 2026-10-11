@@ -51,13 +51,13 @@ ui <- page_fluid(
     base_font = font_google("Inter"),
     heading_font = font_google("Inter")
     ),
-    sidebarLayout(
-      sidebarPanel(
-        fileInput("uploadCsv", "Choose CSV File", accept = ".csv")
+    div(
+      class = "container mt-4", style = "max-width: 960px",
+      div(
+        class = "d-flex justify-content-center",
+        fileInput("uploadCsv", "Choose CSV File", accept = ".csv", width = "320px")
       ),
-      mainPanel(
-        tableOutput("data_table")
-      )
+      div(class = "table-responsive", tableOutput("data_table"))
     ),
     div(
     class = "container my-4", style = "max-width: 960px",
@@ -118,6 +118,11 @@ server <- function(input, output, session) {
       processData(input$uploadCsv$datapath)
     })
     
+    observeEvent(processedData(), {
+      lv <- levels(processedData()$drivingExperience)
+      updateSelectInput(session, "drivingExperience", choices = lv, selected = lv[1])
+    })
+    
     modelFit <- reactive({
       req(processedData())
       model <- fitFinalModel(processedData())
@@ -151,6 +156,76 @@ server <- function(input, output, session) {
 
     output$finalPremium <- renderText({
         paste0("$", format(round(pricingResult()$finalPremium, 2), big.mark = ",", nsmall = 2))
+    })
+    
+    output$premiumTable <- renderTable({
+      r <- pricingResult()
+      data.frame(
+        Component = c("Linear predictor", "Claim probability", "Pure premium", "Final premium (incl. expense)"),
+        Value = c(sprintf("%.4f", r$predictorSum), sprintf("%.2f%%", 100 * r$probability),
+                  sprintf("$%.2f", r$purePremium), sprintf("$%.2f", r$finalPremium))
+      )
+    })
+    
+    output$coefTable <- renderTable({
+      s <- summary(modelFit())$coefficients
+      data.frame(Term = rownames(s), Estimate = s[, 1], `Std. Error` = s[, 2],
+                 `p-value` = s[, 4], `Odds Ratio` = exp(s[, 1]), check.names = FALSE)
+    }, digits = 4)
+    
+    output$aucValue <- renderText({
+      p <- modelStats()$performance
+      validate(need(is.list(p), p))
+      as.character(round(as.numeric(p$auc), 3))
+    })
+    
+    output$brierValue <- renderText({
+      p <- modelStats()$performance
+      validate(need(is.list(p), p))
+      as.character(round(p$brier, 3))
+    })
+    
+    output$dispersionValue <- renderText({
+      d <- modelStats()$diagnostics
+      validate(need(is.list(d), d))
+      as.character(round(d$dispersion, 3))
+    })
+    
+    output$diagTable <- renderTable({
+      d <- modelStats()$diagnostics
+      validate(need(is.list(d), d))
+      data.frame(
+        Metric = c("Dispersion ratio", "Leverage threshold", "Cook's D threshold",
+                   "High-leverage points", "High-influence points"),
+        Value = as.character(c(round(d$dispersion, 3), signif(d$hlpThreshold, 3),
+                               signif(d$cooksThreshold, 3), length(d$highLeverage),
+                               length(d$highInfluence)))
+      )
+    })
+    
+    output$cooksPlot <- renderPlot({
+      d <- cooks.distance(modelFit())
+      plot(d, type = "h", xlab = "Observation", ylab = "Cook's distance")
+      abline(h = 4 / length(d), lty = 2, col = "red")
+    })
+    
+    output$selectionOut <- renderPrint({
+      s <- modelStats()$selection
+      validate(need(is.list(s), s))
+      cat("AIC-selected model:\n"); print(s$aicFormula)
+      cat("\nBIC-selected model:\n"); print(s$bicFormula)
+      cat("\nLRT: AIC model vs full\n"); print(s$lrtAIC)
+      cat("\nLRT: BIC model vs full\n"); print(s$lrtBIC)
+    })
+    
+    output$checksOut <- renderPrint({
+      s <- modelStats()
+      cat("Credit score LRT (rows with a credit score only)\n")
+      print(part(s$credit, "lrt"))
+      cat("\nVIF (full model)\n")
+      print(part(s$collinearity, "vif"))
+      cat("\nKMO (speedingViolations, DUIs, pastAccidents)\n")
+      print(part(s$collinearity, "kmo"))
     })
 }
 

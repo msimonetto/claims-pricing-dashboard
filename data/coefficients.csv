@@ -1,6 +1,6 @@
 "term","factor_level","estimate"
 "(Intercept)","",1.15955396090858
-"gender","",-0.885118433656354
+"gender","TRUE",-0.885118433656354
 "drivingExperience","10-19",-1.88092044667991
 "drivingExperience","20-29",-3.46833846792377
 "drivingExperience","30+",-4.13818280607414

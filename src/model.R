@@ -23,8 +23,8 @@ processData <- function(path) {
   names(predictorsNA) <- names(claims)[1:13]
 
   # Encode two-level categorical variables as binary
-  claims$gender <- ifelse(claims$gender == "female", 1, 0)
-  claims$vehicleType <- ifelse(claims$vehicleType == "sports car", 1, 0)
+  claims$gender <- claims$gender == "female"
+  claims$vehicleType <- claims$vehicleType == "female"
 
   # Encode remaining categorical variables as factors
   claims$age               <- as.factor(claims$age)
@@ -95,6 +95,8 @@ testMulticollinearity <- function(claims) {
 }
 
 performModelSelection <- function(claims) {
+  model <- fitModel(claims)
+  
   set.seed(1)
   stepwiseAIC <- step(model, direction = "backward", k = 2, trace = 0)
   stepwiseBIC <- step(model, direction = "backward", k = log(nrow(claims)), trace = 0)
@@ -150,7 +152,7 @@ getTestPerformance <- function(claims) {
                   family = binomial(link = "logit"),
                   data = claims.train)
 
-  predictions <- predict(model, newdata = claims.test, type = "response")
+  predictions <- predict(model.test, newdata = claims.test, type = "response")
 
   rocScore <- roc(claims.test$isClaimRecorded, predictions)
   AUCROC <- auc(rocScore)
