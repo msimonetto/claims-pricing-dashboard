@@ -3,7 +3,7 @@ library(shiny)
 library(bslib)
 
 # Main calculation routine located here
-source("src/pricing.R")
+source("pricing.R")
 
 getCSVLevels <- function(term) {
     matchedLevels <- coefficients$factor_level[coefficients$term == term]
