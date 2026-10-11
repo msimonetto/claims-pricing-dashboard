@@ -1,5 +1,5 @@
 # Coefficients are stored locally, specific entries are retrieved via function
-coefficients <- read.csv("data/coefficients.csv", stringsAsFactors = FALSE)
+coefficients <- read.csv("coefficients.csv", stringsAsFactors = FALSE)
 
 getCoefficients <- function(t, level = "") {
     if (nzchar(level)) {
