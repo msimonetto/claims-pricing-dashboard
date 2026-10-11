@@ -1,0 +1,11 @@
+term,factor_level,estimate
+(Intercept),,1.19564
+gender,TRUE,-0.97436
+drivingExperience,10-19,-1.68414
+drivingExperience,20-29,-3.06956
+drivingExperience,30+,-3.55071
+isMarried,TRUE,-0.53877
+hasChildren,TRUE,-0.25878
+isVehicleBefore2015,TRUE,1.70822
+isVehicleOwner,TRUE,-1.66489
+pastAccidents,,-0.22319
