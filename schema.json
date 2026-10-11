@@ -1,0 +1,85 @@
+{
+    "type": "object",
+    "properties": {
+        "id": {
+            "type": "integer",
+            "minimum": "1"
+        },
+        "age": {
+            "type": "string",
+            "enum": [
+                "16-25",
+                "26-39",
+                "40-64",
+                "65+"
+            ]
+        },
+        "gender": {
+            "type": "string",
+            "enum": [
+                "female",
+                "male"
+            ]
+        },
+        "isMarried": {
+            "type": "boolean"
+        },
+        "education": {
+            "type": "string",
+            "enum": [
+                "none",
+                "high school",
+                "university"
+            ]
+        },
+        "hasChildren": {
+            "type": "boolean"
+        },
+        "drivingExperience": {
+            "type": "string",
+            "enum": [
+                "0-9",
+                "10-19",
+                "20-29",
+                "30+"
+            ]
+        },
+        "creditScore": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 1.0
+        },
+        "speedingViolations": {
+            "type": "integer",
+            "minimum": 0
+        },
+        "DUIs": {
+            "type": "integer",
+            "minimum": 0
+        },
+        "pastAccidents": {
+            "type": "integer",
+            "minimum": 0
+        },
+        "vehicleType": {
+            "type": "string",
+            "enum": [
+                "sedan",
+                "sports car"
+            ]
+        },
+        "isVehicleBefore2015": {
+            "type": "boolean"
+        },
+        "isVehicleOwner": {
+            "type": "boolean"
+        },
+        "isClaimRecorded": {
+            "type": "boolean"
+        }
+    },
+    "required": [
+        "id",
+        "isClaimRecorded"
+    ]
+}
