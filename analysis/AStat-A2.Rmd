@@ -1,0 +1,390 @@
+---
+title: "AStat-A2"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# Data processing
+
+## Setup
+
+```{r}
+# Importing and/or installing packages
+packageList = c("gemini.R", "httr2", "jsonlite", "dplyr", "purrr", "data.table", "car", "moments", "psych", "pROC")
+packageListRequired = packageList[!(packageList %in% installed.packages()[, "Package"])]
+
+if (length(packageListRequired) > 0) {
+  install.packages(packageListRequired, dependencies = TRUE)
+}
+
+lapply(packageList, library, character.only = TRUE)
+```
+
+Characteristics taken from data from observation.
+
+```{r}
+characteristics <- c("id",
+                     "age", "gender", "isMarried", "education", "hasChildren",
+                     "drivingExperience", "creditScore", "speedingViolations", "DUIs", "pastAccidents",
+                     "vehicleType", "isVehicleBefore2015", "isVehicleOwner",
+                     "isClaimRecorded")
+```
+
+Gemini API keys are obtained (stored locally), relevant libraries included, and Gemini 3.5 Flash Lite is utilised. Sample code was adapted to incorporate JSON schema.
+
+```{r}
+readRenviron("~/.Renviron")
+GEMINI_API_KEY <- Sys.getenv("GEMINI_API_KEY")
+
+projectDirectory = "~/Data/Documents/2026/2026-2/ACTL30004 (Actuarial Statistics)/Assignments/Assignment 2"
+projectSchema    <- jsonlite::fromJSON(path.expand(file.path(projectDirectory, "schema.json")), simplifyVector = FALSE)
+
+Gemini_question = function(input) {
+  model = "gemini-3.1-flash-lite"
+  api_key = GEMINI_API_KEY
+  
+  if (api_key == "") {
+    stop("GEMINI_API_KEY has not been set.")
+  }
+  
+  url = paste0(
+    "https://generativelanguage.googleapis.com/v1beta/models/",
+    model,
+    ":generateContent"
+    )
+  
+  payload <- list(
+    contents = list(
+      list(
+        parts = list(list(text = input))
+      )
+    ),
+    generationConfig = list(
+      responseMimeType = "application/json",
+      responseSchema   = list(type = "array", items = projectSchema)
+    )
+  )
+  
+  response = request(url) |>
+    req_headers(
+      'x-goog-api-key' = api_key,
+      'Content-Type' = "application/json"
+    ) |>
+    req_body_json(payload) |>
+    req_retry(max_tries = 5, backoff = ~ 3) |>
+    req_error(body = function(response) {
+      paste("API Error: ", resp_body_string(response))
+    }) |>
+    req_perform()
+  
+  result = resp_body_json(response, simplifyVector = FALSE)
+  parts  = result$candidates[[1]]$content$parts
+  
+  text_parts <- vapply(parts, function(x) x$text %||% "", character(1))
+  raw_output <- paste(text_parts[nzchar(text_parts)], collapse = "\n")
+  
+  if (!nzchar(raw_output)) {
+    stop("Gemini returned no text response.")
+  }
+  
+  parsed <- tibble::as_tibble(jsonlite::fromJSON(raw_output, simplifyVector = TRUE, flatten = TRUE))
+  
+  if (!is.null(characteristics)) {
+    missingCols <- setdiff(characteristics, names(parsed))
+    if (length(missingCols) > 0) {
+      parsed[missingCols] <- NA
+    }
+    parsed <- parsed[, characteristics]
+  }
+  
+  return(parsed)
+}
+```
+
+Test if API responds and if schema JSON works (both).
+
+```{r}
+Gemini_question('Extract driver covariates from each entry into a JSON array in the exact same order: "The driver is a female aged sixtyfive+. They are single, and have a high school degree, with children. They have less than 9 years driving experience, and they own a sedan manufactured after 2015 . During the policy year, the policyholder had no speeding violations, no DUIs and no past accidents. Their credit score is 0.629. No insurance claim was recorded during the policy year."')
+```
+
+## Extraction from unstructured text
+
+First row (non-entry) is removed from raw data (text vector), all characteristics (by inspection) are extracted and listed below, and data frame is initialised. Response variable is `isClaimRecorded`.
+
+```{r}
+data.raw <- read.csv("data.csv")[[1]]
+df.raw   <- data.frame(
+  id               = seq_along(data.raw),
+  text             = data.raw,
+  stringsAsFactors = FALSE
+)
+
+df <- data.frame(id = df.raw$id)
+
+for (col in setdiff(characteristics, "id")) {
+  df[[col]] <- NA
+}
+```
+
+Declare parameters and functions used in LLM API raw data chunking.
+
+```{r}
+entryCount   = length(data.raw)
+
+chunkSize    = 20
+chunks <- split(
+  df.raw,
+  ceiling(seq_len(entryCount) / chunkSize)
+)
+
+writeChunkPrompt <- function(chunk) {
+  paste0(
+    "Extract unstructured insurance data from each entry below (indexed per 'id' number) into a structured JSON.\n",
+    "Return only the JSON as specified for the given text, in the order prescribed by the JSON.\n",
+    "Do not omit or merge entries.\n",
+    paste(
+      sprintf("ID %d: %s", chunk$id, chunk$text),
+      collapse = "\n"
+    )
+  )
+}
+```
+
+Test one chunk.
+
+```{r}
+testChunk <- chunks[[1]]
+
+testPrompt <- paste0(
+  "Extract unstructured insurance data from each entry below (indexed per 'id' number) into a structured JSON.\n",
+  "Return only the JSON as specified for the given text, in the order prescribed by the JSON.\n",
+  "Do not omit or merge entries.\n",
+  paste(
+    sprintf("ID %d: %s", testChunk$id, testChunk$text),
+    collapse = "\n"
+  )
+)
+
+testResult <- Gemini_question(testPrompt)
+testResult
+```
+
+Perform the extraction from `df.raw` to `df` via LLM API.
+```{r}
+# selectedChunks <- chunks[401:500]
+# processedChunks <- purrr::imap(selectedChunks, function(chunk, index) {
+# indexNumber <- as.integer(index)
+# id.min <- min(as.numeric(chunk$id), na.rm = TRUE)
+# id.max <- max(as.numeric(chunk$id), na.rm = TRUE)
+# message(sprintf("Processing chunk %d (ID: %d -> %d)", indexNumber, id.min, id.max))
+# prompt <- writeChunkPrompt(chunk)
+# result <- Gemini_question(prompt)
+# if (!"id" %in% names(result)) {
+#result$id <- chunk$id
+# }
+# return(as.data.frame(result))
+# })
+#flattenedChunks <- dplyr::bind_rows(processedChunks) |>
+#dplyr::arrange(id) |>
+#dplyr::select(dplyr::all_of(characteristics))
+#df[match(flattenedChunks$id, df$id), characteristics] <- flattenedChunks
+```
+
+```{r}
+#write.csv(df, path.expand(file.path(projectDirectory, "output.csv")), #row.names = FALSE)
+```
+
+## Preparation as claims data for analysis
+
+```{r}
+claims <- read.csv("claims.csv")
+
+# Remove ID
+claims <- claims[, -1]
+
+# LLM appeared to occasionally assert missing credit score as 0 (none in data are strictly 0), change these to NA
+claims$creditScore[claims$creditScore == 0] <- NA
+
+# Check NAs
+predictorsNA <- sapply(1:13, function(x) { length(which(is.na(claims[, x]))) })
+names(predictorsNA) <- names(claims)[1:13]
+
+# 788 entries appear to be missing for credit score, important in just a sec
+predictorsNA
+
+# Encode two-level categorical variables as binary
+claims$gender <- ifelse(claims$gender == "female", 1, 0)
+claims$vehicleType <- ifelse(claims$vehicleType == "sports car", 1, 0)
+
+# Encode remaining categorical variables as factors
+claims$age               <- as.factor(claims$age)
+claims$education         <- as.factor(claims$education)
+claims$drivingExperience <- as.factor(claims$drivingExperience)
+```
+
+# Analysis
+
+Investigate class imbalance with `vehicleType`
+
+```{r}
+table(claims$vehicleType, claims$isClaimRecorded)
+```
+
+Observations of numerical variables
+
+```{r, fig.height = 3, fig.width = 12}
+par(mfrow = c(1,4))
+hist(claims$creditScore, main = "Credit score frequency", xlab = "Credit score")
+hist(claims$speedingViolations, main = "Speeding violation frequency", xlab = "# Speeding violations")
+hist(claims$DUIs, main = "DUI frequency", xlab = "# DUIs")
+hist(claims$pastAccidents, main = "Past accident frequency", xlab = "# Past accidents")
+
+table(claims$creditScore)
+mean(claims$creditScore)
+sd(claims$creditScore)
+
+table(claims$speedingViolations)
+skewness(claims$speedingViolations)
+
+table(claims$DUIs)
+skewness(claims$DUIs)
+
+table(claims$pastAccidents)
+skewness(claims$pastAccidents)
+
+hist(log(1+claims$speedingViolations), main = "Speeding violation frequency", xlab = "# Speeding violations")
+hist(log(1+claims$DUIs), main = "DUI frequency", xlab = "# DUIs")
+hist(log(1+claims$pastAccidents), main = "Past accident frequency", xlab = "# Past accidents")
+```
+
+## Model fitting (via GLM)
+
+Fit full model via GLM. Initially apply to dataset with NAs culled.
+
+```{r}
+claims.culled = claims[-which(is.na(claims$creditScore)), ]
+
+# Fit with creditScore (full model)
+model.full <- glm(isClaimRecorded ~ age + gender + education + drivingExperience + vehicleType + isMarried + hasChildren + isVehicleBefore2015 + isVehicleOwner + creditScore + speedingViolations + DUIs + pastAccidents,
+             family = binomial(link = "logit"),
+             data = claims.culled)
+```
+
+Investigate whether creditScore should be removed, its NAs may be problematic. Use same dataset as before.
+
+```{r}
+# Fit without creditScore
+model.noCredit <- glm(isClaimRecorded ~ age + gender + education + drivingExperience + vehicleType + isMarried + hasChildren + isVehicleBefore2015 + isVehicleOwner + speedingViolations + DUIs + pastAccidents,
+             family = binomial(link = "logit"),
+             data = claims.culled)
+
+# Observe that creditScore is not a strong predictor and the only source of NAs, reasonable to exclude (not associated with other variables where PCA doesn't need to be performed etc)
+summary(model.noCredit)
+
+anova(model.noCredit, model.full, test = "Chisq")
+
+model <- glm(isClaimRecorded ~ age + gender + education + drivingExperience + vehicleType + isMarried + hasChildren + isVehicleBefore2015 + isVehicleOwner + speedingViolations + DUIs + pastAccidents,
+             family = binomial(link = "logit"),
+             data = claims)
+
+```
+
+Check for multicollinearity via VIF.
+
+```{r}
+vif(model)
+KMO(claims[, c("speedingViolations", "DUIs", "pastAccidents")])
+```
+
+Stepwise variable selection performed backwards, using both AIC/BIC as its selection criteria separately. LRT test is performed correspondingly.
+
+```{r}
+set.seed(1)
+stepwiseAIC <- step(model, direction = "backward", k = 2, trace = 0)
+stepwiseBIC <- step(model, direction = "backward", k = log(nrow(claims)), trace = 0)
+summary(stepwiseAIC)
+summary(stepwiseBIC)
+
+anova(stepwiseAIC, model, test = "Chisq")
+anova(stepwiseBIC, model, test = "Chisq")
+
+model <- glm(isClaimRecorded ~ gender + drivingExperience + isMarried + hasChildren + isVehicleBefore2015 + isVehicleOwner + pastAccidents,
+             family = binomial(link = "logit"),
+             data = claims)
+```
+
+## Diagnostics
+
+The following diagnostics are performed (related to assumptions of the final selected GLM):
+
+Overdispersion via deviance dispersion ratio
+
+```{r}
+residuals.deviance <- residuals(model, type = "deviance")
+residuals.pearson  <- residuals(model, type = "pearson")
+
+dispersionRatio    <- summary(model)$deviance / summary(model)$df.residual
+dispersionRatio
+```
+
+Leverage, Cook's distance
+
+```{r}
+leverageValues     <- hatvalues(model)
+cooksDistance      <- cooks.distance(model)
+
+hlpThreshold       <- 3 * (length(coef(model)) - 1 + 1) / nrow(claims)
+cooksThreshold     <- 4 / nrow(claims)
+
+highLeverage       <- which(leverageValues > hlpThreshold)
+length(highLeverage)
+max(leverageValues[highLeverage])
+
+highInfluence      <- which(cooksDistance  > cooksThreshold)
+length(highInfluence)
+max(cooksDistance)
+```
+
+In-sample/out-of-sample ROC-AUC and Brier scores (obtained by taking 70%-30% split of training-test data)
+
+```{r}
+set.seed(1)
+trainSample  <- sample(nrow(df), nrow(df) * 0.7)
+
+claims.train <- claims[ trainSample, ]
+claims.test  <- claims[-trainSample, ]
+
+model.test <- glm(isClaimRecorded ~ gender + drivingExperience + isMarried + hasChildren + isVehicleBefore2015 + isVehicleOwner + pastAccidents,
+             family = binomial(link = "logit"),
+             data = claims.train)
+
+predictions <- predict(model, newdata = claims.test, type = "response")
+
+rocScore <- roc(claims.test$isClaimRecorded, predictions)
+auc(rocScore)
+
+brierScore <- mean((claims.test$isClaimRecorded - predictions)^2)
+brierScore
+```
+
+Relevant diagnostic plots
+
+```{r, fig.height = 4, fig.width = 10}
+par(mfrow = c(1, 2), cex = 0.8)
+
+plot(leverageValues, type = "h", main = "Leverage (h_ii)", ylab = "h_ii")
+abline(h = hlpThreshold, col = "green")
+
+plot(cooksDistance, type = "h", main = "Cook's Distance", ylab = "Cook's Distance")
+abline(h = cooksThreshold, col = "blue")
+```
+
+Investigate association between past accidents and driving experience (reflection).
+
+```{r}
+table(
+  cut(claims$pastAccidents, c(-Inf, 0, 1, Inf), labels = c("0", "1", ">=2")),
+  claims$drivingExperience
+)
+```
